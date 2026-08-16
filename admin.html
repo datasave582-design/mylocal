@@ -96,6 +96,24 @@
       isFirebaseReady = true;
     } catch (err) { console.warn("Firebase Offline Mode (admin)"); }
 
+    let __syncWarningShown = false;
+    function notifySyncBlocked() {
+      if (__syncWarningShown) return;
+      __syncWarningShown = true;
+      const bar = document.createElement("div");
+      bar.style.cssText = "position:fixed;left:0;right:0;bottom:0;z-index:100000;background:#dc3545;color:#fff;padding:10px 14px;font-size:0.8rem;text-align:center;";
+      bar.innerHTML = "⚠️ Firebase Database Rules के कारण data save/sync नहीं हो पा रहा। Firebase Console → Realtime Database → Rules चेक करें। <button style=\"margin-left:8px;background:#fff;color:#dc3545;border:0;border-radius:6px;padding:2px 8px;font-weight:bold;\" onclick=\"this.parentElement.remove()\">बंद करें</button>";
+      document.body.appendChild(bar);
+    }
+    window.addEventListener("unhandledrejection", (e) => {
+      const msg = String(e?.reason?.message || e?.reason || "");
+      if (msg.includes("PERMISSION_DENIED") || msg.includes("permission_denied")) {
+        e.preventDefault();
+        console.warn("Firebase permission denied — check Realtime Database Rules in the Firebase console.");
+        notifySyncBlocked();
+      }
+    });
+
     const State = {
       identity: null, // {mode:'firebase', email, uid}
       posts: JSON.parse(localStorage.getItem("app_posts")) || [],
@@ -108,24 +126,24 @@
        Always write/remove ONE keyed item at a time. */
     function syncPostUpsert(post) {
       localStorage.setItem("app_posts", JSON.stringify(State.posts));
-      if (isFirebaseReady) db.ref("posts/" + post.id).set(post).catch(e => console.warn("Post sync failed (check Firebase rules):", e.message));
+      if (isFirebaseReady) db.ref("posts/" + post.id).set(post).catch(e => { console.warn("Post sync failed (check Firebase rules):", e.message); notifySyncBlocked(); });
     }
     function syncPostDelete(id) {
       localStorage.setItem("app_posts", JSON.stringify(State.posts));
-      if (isFirebaseReady) db.ref("posts/" + id).remove().catch(e => console.warn("Post delete sync failed:", e.message));
+      if (isFirebaseReady) db.ref("posts/" + id).remove().catch(e => { console.warn("Post delete sync failed:", e.message); notifySyncBlocked(); });
     }
     function syncOrderUpdate(order) {
       localStorage.setItem("app_orders", JSON.stringify(State.orders));
-      if (isFirebaseReady) db.ref("orders/" + order.orderId).set(order).catch(e => console.warn("Order sync failed:", e.message));
+      if (isFirebaseReady) db.ref("orders/" + order.orderId).set(order).catch(e => { console.warn("Order sync failed:", e.message); notifySyncBlocked(); });
     }
     function syncOrderDelete(id) {
       localStorage.setItem("app_orders", JSON.stringify(State.orders));
-      if (isFirebaseReady) db.ref("orders/" + id).remove().catch(e => console.warn("Order delete sync failed:", e.message));
+      if (isFirebaseReady) db.ref("orders/" + id).remove().catch(e => { console.warn("Order delete sync failed:", e.message); notifySyncBlocked(); });
     }
     if (isFirebaseReady) {
-      db.ref("posts").on("value", snap => { State.posts = snap.val() ? Object.values(snap.val()) : []; localStorage.setItem("app_posts", JSON.stringify(State.posts)); if (AdminAuth.isLoggedIn()) AdminPanel.refresh(); }, err => console.warn("posts sync error:", err.message));
-      db.ref("orders").on("value", snap => { State.orders = snap.val() ? Object.values(snap.val()) : []; localStorage.setItem("app_orders", JSON.stringify(State.orders)); if (AdminAuth.isLoggedIn()) AdminPanel.refresh(); }, err => console.warn("orders sync error:", err.message));
-      db.ref("adminTickets").on("value", snap => { State.adminTickets = snap.val() ? Object.values(snap.val()) : []; if (AdminAuth.isLoggedIn()) AdminPanel.refresh(); }, err => console.warn("tickets sync error:", err.message));
+      db.ref("posts").on("value", snap => { State.posts = snap.val() ? Object.values(snap.val()) : []; localStorage.setItem("app_posts", JSON.stringify(State.posts)); if (AdminAuth.isLoggedIn()) AdminPanel.refresh(); }, err => { console.warn("posts sync error:", err.message); notifySyncBlocked(); });
+      db.ref("orders").on("value", snap => { State.orders = snap.val() ? Object.values(snap.val()) : []; localStorage.setItem("app_orders", JSON.stringify(State.orders)); if (AdminAuth.isLoggedIn()) AdminPanel.refresh(); }, err => { console.warn("orders sync error:", err.message); notifySyncBlocked(); });
+      db.ref("adminTickets").on("value", snap => { State.adminTickets = snap.val() ? Object.values(snap.val()) : []; if (AdminAuth.isLoggedIn()) AdminPanel.refresh(); }, err => { console.warn("tickets sync error:", err.message); notifySyncBlocked(); });
     }
 
     /* ========================================================================
@@ -141,11 +159,27 @@
         if (!email || !pass) return alert("Email और Password दोनों डालें।");
         try {
           const c = await auth.signInWithEmailAndPassword(email, pass);
-          const snap = await db.ref("adminEmails/" + c.user.uid).once("value");
-          if (snap.val() !== true) { await auth.signOut(); return alert("यह Firebase user Super Admin के रूप में authorize नहीं है। Firebase Console में adminEmails/" + c.user.uid + " = true सेट करें।"); }
+          const adminsSnap = await db.ref("adminEmails").once("value");
+          const adminsData = adminsSnap.val();
+          const isAuthorized = !!(adminsData && adminsData[c.user.uid] === true);
+          const noAdminsExistYet = !adminsData || Object.keys(adminsData).length === 0;
+          if (!isAuthorized) {
+            if (noAdminsExistYet) {
+              // First-ever successful login on a fresh project automatically becomes the first Super Admin.
+              await db.ref("adminEmails/" + c.user.uid).set(true);
+            } else {
+              await auth.signOut();
+              return alert("यह Firebase user Super Admin के रूप में authorize नहीं है। किसी मौजूदा Admin से 'Users' टैब में जाकर authorize करवाएं, या Firebase Console में adminEmails/" + c.user.uid + " = true सेट करें।");
+            }
+          }
           State.identity = { mode: "firebase", name: c.user.displayName || email.split("@")[0], email, uid: c.user.uid };
           this.enter();
-        } catch (e) { alert("Firebase login failed: " + (e.message || e)); }
+        } catch (e) {
+          let hint = "";
+          if (String(e.code) === "auth/operation-not-allowed") hint = "\n\n➡️ Firebase Console → Authentication → Sign-in method → \"Email/Password\" को Enable करें।";
+          else if (String(e.code) === "auth/user-not-found" || String(e.code) === "auth/wrong-password" || String(e.code) === "auth/invalid-credential") hint = "\n\n➡️ अगर यह पहला login है, तो पहले Firebase Console → Authentication → Users में जाकर यह user बनाएं।";
+          alert("Firebase login failed: " + (e.message || e) + hint);
+        }
       },
       enter() {
         document.getElementById("login-screen").style.display = "none";

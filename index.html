@@ -443,6 +443,29 @@
       isFirebaseReady = true;
     } catch (err) { console.warn("Firebase Offline Mode"); }
 
+    /* Firebase's JS SDK can surface a write-permission rejection as BOTH the
+       promise we already .catch() ourselves AND a second internal "unhandled
+       rejection" — this is a known SDK quirk, not an app bug. We swallow the
+       duplicate here so it doesn't look like a crash, and show one gentle
+       banner (instead of spamming an alert per message) if sync keeps failing. */
+    let __syncWarningShown = false;
+    function notifySyncBlocked() {
+      if (__syncWarningShown) return;
+      __syncWarningShown = true;
+      const bar = document.createElement("div");
+      bar.style.cssText = "position:fixed;left:0;right:0;bottom:0;z-index:100000;background:#dc3545;color:#fff;padding:10px 14px;font-size:0.8rem;text-align:center;";
+      bar.innerHTML = "⚠️ Cloud sync में समस्या है — messages/posts सबके साथ share नहीं हो पा रहे। Admin से Firebase Database Rules चेक कराएं। <button style=\"margin-left:8px;background:#fff;color:#dc3545;border:0;border-radius:6px;padding:2px 8px;font-weight:bold;\" onclick=\"this.parentElement.remove()\">बंद करें</button>";
+      document.body.appendChild(bar);
+    }
+    window.addEventListener("unhandledrejection", (e) => {
+      const msg = String(e?.reason?.message || e?.reason || "");
+      if (msg.includes("PERMISSION_DENIED") || msg.includes("permission_denied")) {
+        e.preventDefault();
+        console.warn("Firebase permission denied — check Realtime Database Rules in the Firebase console.");
+        notifySyncBlocked();
+      }
+    });
+
     const ThemeEngine = {
       currentTheme: localStorage.getItem("app_theme") || "light",
       init() { this.applyTheme(this.currentTheme); },
@@ -482,11 +505,11 @@
     }
     function syncPostUpsert(post) {
       savePostsLocal();
-      if (isFirebaseReady) db.ref("posts/" + post.id).set(post).catch(e => console.warn("Post sync failed (check Firebase rules):", e.message));
+      if (isFirebaseReady) db.ref("posts/" + post.id).set(post).catch(e => { console.warn("Post sync failed (check Firebase rules):", e.message); notifySyncBlocked(); });
     }
     function syncPostDelete(id) {
       savePostsLocal();
-      if (isFirebaseReady) db.ref("posts/" + id).remove().catch(e => console.warn("Post delete sync failed:", e.message));
+      if (isFirebaseReady) db.ref("posts/" + id).remove().catch(e => { console.warn("Post delete sync failed:", e.message); notifySyncBlocked(); });
     }
     // Back-compat alias used in a few places that only need the localStorage write.
     function savePosts() { savePostsLocal(); }
@@ -499,9 +522,9 @@
     };
 
     if (isFirebaseReady) {
-      db.ref("posts").on("value", (snap) => { State.posts = snap.val() ? Object.values(snap.val()) : []; localStorage.setItem("app_posts", JSON.stringify(State.posts)); App.refresh(); }, (err) => console.warn("posts sync error (check Firebase rules):", err.message));
-      db.ref("orders").on("value", (snap) => { State.orders = snap.val() ? Object.values(snap.val()) : []; localStorage.setItem("app_orders", JSON.stringify(State.orders)); App.refresh(); }, (err) => console.warn("orders sync error:", err.message));
-      db.ref("chat").on("value", (snap) => { State.chatMessages = snap.val() ? Object.values(snap.val()) : []; localStorage.setItem("app_chat", JSON.stringify(State.chatMessages)); App.refresh(); }, (err) => console.warn("chat sync error (check Firebase rules):", err.message));
+      db.ref("posts").on("value", (snap) => { State.posts = snap.val() ? Object.values(snap.val()) : []; localStorage.setItem("app_posts", JSON.stringify(State.posts)); App.refresh(); }, (err) => { console.warn("posts sync error (check Firebase rules):", err.message); notifySyncBlocked(); });
+      db.ref("orders").on("value", (snap) => { State.orders = snap.val() ? Object.values(snap.val()) : []; localStorage.setItem("app_orders", JSON.stringify(State.orders)); App.refresh(); }, (err) => { console.warn("orders sync error:", err.message); notifySyncBlocked(); });
+      db.ref("chat").on("value", (snap) => { State.chatMessages = snap.val() ? Object.values(snap.val()) : []; localStorage.setItem("app_chat", JSON.stringify(State.chatMessages)); App.refresh(); }, (err) => { console.warn("chat sync error (check Firebase rules):", err.message); notifySyncBlocked(); });
       db.ref("settings/advertising").on("value", (snap) => {
         const ad = snap.val();
         if (ad) localStorage.setItem("apnalocal_admin_ad", JSON.stringify(ad));
@@ -1125,7 +1148,7 @@
         State.orders.unshift(newOrder);
         localStorage.setItem("app_orders", JSON.stringify(State.orders));
         if (isFirebaseReady) {
-          db.ref("orders/" + newOrder.orderId).set(newOrder).catch(e => console.warn("Order sync failed:", e.message));
+          db.ref("orders/" + newOrder.orderId).set(newOrder).catch(e => { console.warn("Order sync failed:", e.message); notifySyncBlocked(); });
           db.ref("superadmin/orders/" + newOrder.orderId).set(newOrder).catch(() => {});
         }
         bootstrap.Modal.getInstance(document.getElementById("buyModal")).hide();
