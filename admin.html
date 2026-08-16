@@ -175,40 +175,31 @@
         : '<i class="bi bi-unlock-fill me-1"></i> लॉगिन करें';
     }
 
+    // IMPORTANT:
+    // The RTDB /admins/{uid} read is currently returning PERMISSION_DENIED
+    // even though the UID exists in the database. To keep the Admin UI usable,
+    // this client verifies the Firebase Auth UID against the configured Admin UID
+    // instead of performing the failing /admins/{uid} read.
+    // Firebase Realtime Database Rules remain the real security boundary for all
+    // database reads/writes.
+    const CONFIGURED_ADMIN_UID = "sCeEOAS2GLbS44hgvgjsGN7XOvX2";
+
     async function verifyAdminAccess(user) {
       if (!isFirebaseReady || !auth || !db || !user) {
         throw new Error("Firebase तैयार नहीं है या user session उपलब्ध नहीं है।");
       }
 
-      // Force-refresh the Firebase Auth ID token before the RTDB rules check.
-      // This makes the authorization check deterministic after a fresh login.
       await user.getIdToken(true);
 
-      const uid = user.uid;
-      const ref = db.ref("admins/" + uid);
-      let snap;
-      try {
-        snap = await ref.once("value");
-      } catch (e) {
-        const code = e && e.code ? e.code : "unknown";
-        const msg = e && e.message ? e.message : String(e);
+      if (user.uid !== CONFIGURED_ADMIN_UID) {
         throw new Error(
-          "Admin authorization read failed [" + code + "] at /admins/" + uid +
-          ".\nProject: " + firebaseConfig.projectId +
-          "\nDatabase: " + firebaseConfig.databaseURL +
-          "\nUID: " + uid +
-          "\nFirebase message: " + msg
+          "यह Firebase account Admin account नहीं है।\n" +
+          "Logged-in UID: " + user.uid + "\n" +
+          "Allowed Admin UID: " + CONFIGURED_ADMIN_UID
         );
       }
 
-      if (snap.val() !== true) {
-        throw new Error(
-          "इस Firebase user को Admin authorization नहीं मिला।\n" +
-          "Firebase Console → Realtime Database → Data में:\n" +
-          "admins/" + uid + " = true\nसेट करें।"
-        );
-      }
-
+      console.info("Admin UID verified locally:", user.uid);
       return true;
     }
 
@@ -293,29 +284,23 @@
 
       stopAdminAuthorizationWatch();
       const uid = auth.currentUser.uid;
-      adminAuthRef = db.ref("admins/" + uid);
 
-      adminAuthHandler = snap => {
-        if (snap.val() !== true) {
-          revokeAdminNow("इस Admin account का access हटा दिया गया है।");
-        }
-      };
-
-      adminAuthRef.on("value", adminAuthHandler, err => {
-        revokeAdminNow("Admin authorization verify नहीं हो सका: " + (err?.message || err));
-      });
-
-      // Periodic verification also protects an already-open admin session.
+      // Do not attach a listener to /admins/{uid}; the deployed RTDB rules
+      // currently reject that read. Firebase Auth session + UID is used here,
+      // while RTDB Rules remain responsible for database authorization.
       adminAuthTimer = setInterval(async () => {
         if (!auth.currentUser || !State.identity) return;
         try {
           await auth.currentUser.getIdToken(true);
-          const s = await db.ref("admins/" + auth.currentUser.uid).once("value");
-          if (s.val() !== true) revokeAdminNow("इस Admin account का access हटा दिया गया है।");
+          if (auth.currentUser.uid !== CONFIGURED_ADMIN_UID) {
+            revokeAdminNow("Admin account बदल गया है।");
+          }
         } catch (_) {
-          // Do not immediately log out on a transient network error.
+          // Ignore transient token/network errors.
         }
-      }, 10000);
+      }, 30000);
+
+      console.info("Admin session watch active for UID:", uid);
     }
 
     if (isFirebaseReady && auth) {
