@@ -44,13 +44,14 @@
       <input id="adminEmail" type="email" class="form-control mb-2" placeholder="Admin email" onkeyup="if(event.key==='Enter') document.getElementById('adminFirebasePass').focus()">
       <input id="adminFirebasePass" type="password" class="form-control mb-2" placeholder="Firebase password" onkeyup="if(event.key==='Enter') AdminAuth.loginWithFirebase()">
       <button class="btn btn-danger w-100 fw-bold py-2" onclick="AdminAuth.loginWithFirebase()"><i class="bi bi-unlock-fill me-1"></i> लॉगिन करें</button>
-      <div class="small text-secondary mt-2">पहले Firebase Console में Email/Password user बनाकर उसे <code>adminEmails/{uid} = true</code> से authorize करें। सुरक्षा के लिए Admin login सिर्फ Firebase से होता है — कोई साधारण पासवर्ड login नहीं है।</div>
+      <div class="small text-secondary mt-2">पहले Firebase Console में Email/Password user बनाकर उसे <code>admins/{uid} = true</code> से authorize करें। सुरक्षा के लिए Admin login सिर्फ Firebase से होता है — कोई साधारण पासवर्ड login नहीं है।</div>
       <div class="text-center mt-4"><a class="quiet small" href="index.html"><i class="bi bi-arrow-left me-1"></i> Consumer App पर वापस जाएँ</a></div>
     </div>
   </div>
 
   <!-- ============== ADMIN DASHBOARD (shown after login) ============== -->
-  <div id="admin-app" style="display:none;">
+  <button type="button" onclick="FirebaseConfigManager.open()" title="Firebase Config">⚙️ Firebase</button>
+<div id="admin-app" style="display:none;">
     <header class="admin-header py-3 px-3 sticky-top shadow">
       <div class="container d-flex align-items-center justify-content-between flex-wrap gap-2">
         <div class="d-flex align-items-center gap-2">
@@ -82,12 +83,21 @@
     /* ========================================================================
        FIREBASE (same project as the consumer app — data stays in sync)
        ======================================================================== */
-    const firebaseConfig = {
-      apiKey: "AIzaSyAOVmhRrl_bb3qp0UIisvGqtrhC-P2pKtQ",
-      authDomain: "mylocals-56b43.firebaseapp.com",
-      projectId: "mylocals-56b43",
-      databaseURL: "https://mylocals-56b43-default-rtdb.firebaseio.com"
+    const FIREBASE_DEFAULT_CONFIG = {
+      apiKey: "AIzaSyBBSsIRGaOswYUxMY6G6udxLM8V_-Tdytk",
+      authDomain: "local-9a38c.firebaseapp.com",
+      databaseURL: "https://local-9a38c-default-rtdb.firebaseio.com",
+      projectId: "local-9a38c",
+      storageBucket: "local-9a38c.firebasestorage.app",
+      messagingSenderId: "251764724922",
+      appId: "1:251764724922:web:7e9823c4e20249b79f1e83",
+      measurementId: "G-VEDV138WYG"
     };
+    let firebaseConfig = FIREBASE_DEFAULT_CONFIG;
+    try {
+      const saved = localStorage.getItem("mylocal_firebase_config_v1");
+      if (saved) firebaseConfig = {...FIREBASE_DEFAULT_CONFIG, ...JSON.parse(saved)};
+    } catch (_) {}
     let db = null, auth = null, isFirebaseReady = false;
     try {
       firebase.initializeApp(firebaseConfig);
@@ -95,24 +105,6 @@
       auth = firebase.auth();
       isFirebaseReady = true;
     } catch (err) { console.warn("Firebase Offline Mode (admin)"); }
-
-    let __syncWarningShown = false;
-    function notifySyncBlocked() {
-      if (__syncWarningShown) return;
-      __syncWarningShown = true;
-      const bar = document.createElement("div");
-      bar.style.cssText = "position:fixed;left:0;right:0;bottom:0;z-index:100000;background:#dc3545;color:#fff;padding:10px 14px;font-size:0.8rem;text-align:center;";
-      bar.innerHTML = "⚠️ Firebase Database Rules के कारण data save/sync नहीं हो पा रहा। Firebase Console → Realtime Database → Rules चेक करें। <button style=\"margin-left:8px;background:#fff;color:#dc3545;border:0;border-radius:6px;padding:2px 8px;font-weight:bold;\" onclick=\"this.parentElement.remove()\">बंद करें</button>";
-      document.body.appendChild(bar);
-    }
-    window.addEventListener("unhandledrejection", (e) => {
-      const msg = String(e?.reason?.message || e?.reason || "");
-      if (msg.includes("PERMISSION_DENIED") || msg.includes("permission_denied")) {
-        e.preventDefault();
-        console.warn("Firebase permission denied — check Realtime Database Rules in the Firebase console.");
-        notifySyncBlocked();
-      }
-    });
 
     const State = {
       identity: null, // {mode:'firebase', email, uid}
@@ -126,29 +118,39 @@
        Always write/remove ONE keyed item at a time. */
     function syncPostUpsert(post) {
       localStorage.setItem("app_posts", JSON.stringify(State.posts));
-      if (isFirebaseReady) db.ref("posts/" + post.id).set(post).catch(e => { console.warn("Post sync failed (check Firebase rules):", e.message); notifySyncBlocked(); });
+      if (isFirebaseReady) db.ref("posts/" + post.id).set(post).catch(e => console.warn("Post sync failed (check Firebase rules):", e.message));
     }
     function syncPostDelete(id) {
       localStorage.setItem("app_posts", JSON.stringify(State.posts));
-      if (isFirebaseReady) db.ref("posts/" + id).remove().catch(e => { console.warn("Post delete sync failed:", e.message); notifySyncBlocked(); });
+      if (isFirebaseReady) db.ref("posts/" + id).remove().catch(e => console.warn("Post delete sync failed:", e.message));
     }
     function syncOrderUpdate(order) {
       localStorage.setItem("app_orders", JSON.stringify(State.orders));
-      if (isFirebaseReady) db.ref("orders/" + order.orderId).set(order).catch(e => { console.warn("Order sync failed:", e.message); notifySyncBlocked(); });
+      if (isFirebaseReady) db.ref("orders/" + order.orderId).set(order).catch(e => console.warn("Order sync failed:", e.message));
     }
     function syncOrderDelete(id) {
       localStorage.setItem("app_orders", JSON.stringify(State.orders));
-      if (isFirebaseReady) db.ref("orders/" + id).remove().catch(e => { console.warn("Order delete sync failed:", e.message); notifySyncBlocked(); });
+      if (isFirebaseReady) db.ref("orders/" + id).remove().catch(e => console.warn("Order delete sync failed:", e.message));
     }
-    if (isFirebaseReady) {
-      db.ref("posts").on("value", snap => { State.posts = snap.val() ? Object.values(snap.val()) : []; localStorage.setItem("app_posts", JSON.stringify(State.posts)); if (AdminAuth.isLoggedIn()) AdminPanel.refresh(); }, err => { console.warn("posts sync error:", err.message); notifySyncBlocked(); });
-      db.ref("orders").on("value", snap => { State.orders = snap.val() ? Object.values(snap.val()) : []; localStorage.setItem("app_orders", JSON.stringify(State.orders)); if (AdminAuth.isLoggedIn()) AdminPanel.refresh(); }, err => { console.warn("orders sync error:", err.message); notifySyncBlocked(); });
-      db.ref("adminTickets").on("value", snap => { State.adminTickets = snap.val() ? Object.values(snap.val()) : []; if (AdminAuth.isLoggedIn()) AdminPanel.refresh(); }, err => { console.warn("tickets sync error:", err.message); notifySyncBlocked(); });
+    let adminRefs = [];
+    function detachAdminRealtime() { adminRefs.forEach(x => { try { x.ref.off("value", x.handler); } catch (_) {} }); adminRefs = []; }
+    function attachAdminRealtime() {
+      if (!isFirebaseReady || !auth.currentUser || !State.identity) return;
+      detachAdminRealtime();
+      const attach = (path, setter) => {
+        const ref = db.ref(path);
+        const handler = snap => { setter(snap.val()); if (AdminAuth.isLoggedIn()) AdminPanel.refresh(); };
+        ref.on("value", handler, err => console.warn(path+" sync error:", err.message));
+        adminRefs.push({ref,handler});
+      };
+      attach("posts", v => { State.posts = v ? Object.values(v) : []; localStorage.setItem("app_posts", JSON.stringify(State.posts)); });
+      attach("orders", v => { State.orders = v ? Object.values(v) : []; localStorage.setItem("app_orders", JSON.stringify(State.orders)); });
+      attach("adminTickets", v => { State.adminTickets = v ? Object.values(v) : []; localStorage.setItem("app_admin_tickets", JSON.stringify(State.adminTickets)); });
     }
 
     /* ========================================================================
        LOGIN / AUTH — Firebase-only. There is no local password fallback:
-       every admin must be a Firebase user authorized via adminEmails/{uid}=true.
+       every admin must be a Firebase user authorized via admins/{uid}=true.
        ======================================================================== */
     const AdminAuth = {
       isLoggedIn() { return !!State.identity; },
@@ -159,27 +161,13 @@
         if (!email || !pass) return alert("Email और Password दोनों डालें।");
         try {
           const c = await auth.signInWithEmailAndPassword(email, pass);
-          const adminsSnap = await db.ref("adminEmails").once("value");
-          const adminsData = adminsSnap.val();
-          const isAuthorized = !!(adminsData && adminsData[c.user.uid] === true);
-          const noAdminsExistYet = !adminsData || Object.keys(adminsData).length === 0;
-          if (!isAuthorized) {
-            if (noAdminsExistYet) {
-              // First-ever successful login on a fresh project automatically becomes the first Super Admin.
-              await db.ref("adminEmails/" + c.user.uid).set(true);
-            } else {
-              await auth.signOut();
-              return alert("यह Firebase user Super Admin के रूप में authorize नहीं है। किसी मौजूदा Admin से 'Users' टैब में जाकर authorize करवाएं, या Firebase Console में adminEmails/" + c.user.uid + " = true सेट करें।");
-            }
-          }
+          const snap = await db.ref("admins/" + c.user.uid).once("value");
+          if (snap.val() !== true) { await auth.signOut(); return alert("यह Firebase user Super Admin के रूप में authorize नहीं है। Firebase Console में admins/" + c.user.uid + " = true सेट करें।"); }
           State.identity = { mode: "firebase", name: c.user.displayName || email.split("@")[0], email, uid: c.user.uid };
           this.enter();
-        } catch (e) {
-          let hint = "";
-          if (String(e.code) === "auth/operation-not-allowed") hint = "\n\n➡️ Firebase Console → Authentication → Sign-in method → \"Email/Password\" को Enable करें।";
-          else if (String(e.code) === "auth/user-not-found" || String(e.code) === "auth/wrong-password" || String(e.code) === "auth/invalid-credential") hint = "\n\n➡️ अगर यह पहला login है, तो पहले Firebase Console → Authentication → Users में जाकर यह user बनाएं।";
-          alert("Firebase login failed: " + (e.message || e) + hint);
-        }
+          attachAdminRealtime();
+          watchAdminAuthorization();
+        } catch (e) { alert("Firebase login failed: " + (e.message || e)); }
       },
       enter() {
         document.getElementById("login-screen").style.display = "none";
@@ -189,12 +177,37 @@
       },
       logout() {
         if (!confirm("Admin panel से logout करें?")) return;
+        detachAdminRealtime(); stopAdminAuthorizationWatch();
         if (isFirebaseReady) auth.signOut().catch(() => {});
         State.identity = null;
         document.getElementById("admin-app").style.display = "none";
         document.getElementById("login-screen").style.display = "flex";
       }
     };
+
+    let adminAuthRef = null, adminAuthHandler = null, adminAuthTimer = null;
+    function stopAdminAuthorizationWatch() {
+      if (adminAuthRef && adminAuthHandler) { try { adminAuthRef.off("value", adminAuthHandler); } catch (_) {} }
+      adminAuthRef=null; adminAuthHandler=null; if(adminAuthTimer) clearInterval(adminAuthTimer); adminAuthTimer=null;
+    }
+    function revokeAdminNow(message) {
+      stopAdminAuthorizationWatch(); detachAdminRealtime(); State.identity=null;
+      document.getElementById("admin-app").style.display="none"; document.getElementById("login-screen").style.display="flex";
+      if(isFirebaseReady) auth.signOut().catch(()=>{}); alert(message||"Admin access revoked.");
+    }
+    function watchAdminAuthorization() {
+      if(!isFirebaseReady || !auth.currentUser || !State.identity) return;
+      stopAdminAuthorizationWatch(); const uid=auth.currentUser.uid; adminAuthRef=db.ref("admins/"+uid);
+      adminAuthHandler=snap=>{ if(snap.val()!==true) revokeAdminNow("इस Admin account का access हटा दिया गया है।"); };
+      adminAuthRef.on("value",adminAuthHandler,()=>revokeAdminNow("Admin authorization verify नहीं हो सका।"));
+      adminAuthTimer=setInterval(async()=>{ if(!auth.currentUser||!State.identity)return; try{const s=await db.ref("admins/"+auth.currentUser.uid).once("value"); if(s.val()!==true) revokeAdminNow("इस Admin account का access हटा दिया गया है।");}catch(_){} },10000);
+    }
+    if(isFirebaseReady && auth){
+      auth.onAuthStateChanged(async user=>{
+        if(!user){ stopAdminAuthorizationWatch(); detachAdminRealtime(); if(State.identity){State.identity=null;document.getElementById("admin-app").style.display="none";document.getElementById("login-screen").style.display="flex";} return; }
+        try{const s=await db.ref("admins/"+user.uid).once("value"); if(s.val()===true){State.identity={mode:"firebase",name:user.displayName||user.email?.split("@")[0]||"Admin",email:user.email||"",uid:user.uid}; AdminAuth.enter(); attachAdminRealtime(); watchAdminAuthorization();} else {await auth.signOut();}}catch(_){await auth.signOut().catch(()=>{});}
+      });
+    }
 
     /* ========================================================================
        PRODUCT / ADVERTISEMENT / ORDER MANAGEMENT
@@ -279,7 +292,7 @@
           const app = firebase.initializeApp(firebaseConfig, secName), au = app.auth();
           const c = await au.createUserWithEmailAndPassword(email, pass);
           await db.ref("users/" + c.user.uid).set({ uid: c.user.uid, name, email, createdAt: Date.now(), createdBy: "admin", role: makeAdmin ? "superadmin" : "user" });
-          if (makeAdmin) await db.ref("adminEmails/" + c.user.uid).set(true);
+          if (makeAdmin) await db.ref("admins/" + c.user.uid).set(true);
           await au.signOut(); await app.delete();
           alert("✓ User Firebase Authentication में बन गया।\nEmail: " + email);
           document.getElementById("newUserName").value = ""; document.getElementById("newUserEmail").value = ""; document.getElementById("newUserPass").value = "";
@@ -583,6 +596,140 @@
     };
 
     document.addEventListener("DOMContentLoaded", () => {});
-  </script>
+  
+/* ========================================================================
+   FIREBASE CONFIG MANAGER
+   ======================================================================== */
+(function(){
+  const STORAGE_KEY = "mylocal_firebase_config_v1";
+
+  const DEFAULT_CONFIG = {
+    apiKey: "AIzaSyBBSsIRGaOswYUxMY6G6udxLM8V_-Tdytk",
+    authDomain: "local-9a38c.firebaseapp.com",
+    databaseURL: "https://local-9a38c-default-rtdb.firebaseio.com",
+    projectId: "local-9a38c",
+    storageBucket: "local-9a38c.firebasestorage.app",
+    messagingSenderId: "251764724922",
+    appId: "1:251764724922:web:7e9823c4e20249b79f1e83",
+    measurementId: "G-VEDV138WYG"
+  };
+
+  function getSaved(){
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      return raw ? {...DEFAULT_CONFIG, ...JSON.parse(raw)} : {...DEFAULT_CONFIG};
+    } catch (_) {
+      return {...DEFAULT_CONFIG};
+    }
+  }
+
+  function setStatus(msg, ok){
+    const el = document.getElementById("firebase-config-status");
+    if (!el) return;
+    el.textContent = msg;
+    el.style.color = ok ? "#198754" : "#dc3545";
+  }
+
+  window.FirebaseConfigManager = {
+    open(){
+      const modal = document.getElementById("firebase-config-modal");
+      if (!modal) return;
+      modal.style.display = "block";
+      this.loadCurrent();
+    },
+
+    close(){
+      const modal = document.getElementById("firebase-config-modal");
+      if (modal) modal.style.display = "none";
+    },
+
+    loadCurrent(){
+      const box = document.getElementById("firebase-config-json");
+      if (box) box.value = JSON.stringify(getSaved(), null, 2);
+      setStatus("Current Firebase config loaded.", true);
+    },
+
+    validate(c){
+      const required = ["apiKey","authDomain","databaseURL","projectId","storageBucket","messagingSenderId","appId"];
+      const missing = required.filter(k => !c[k] || typeof c[k] !== "string");
+      if (missing.length) throw new Error("Missing: " + missing.join(", "));
+      if (!/^https?:\/\//i.test(c.databaseURL)) throw new Error("databaseURL invalid है।");
+      return true;
+    },
+
+    parse(){
+      const box = document.getElementById("firebase-config-json");
+      if (!box) throw new Error("Config box नहीं मिला।");
+      let c;
+      try { c = JSON.parse(box.value); }
+      catch (_) { throw new Error("Firebase Config valid JSON नहीं है।"); }
+      this.validate(c);
+      return c;
+    },
+
+    async test(){
+      try {
+        const c = this.parse();
+        const r = await fetch(c.databaseURL.replace(/\/+$/,"") + "/.json?shallow=true");
+        if (!r.ok && r.status !== 401 && r.status !== 403) {
+          throw new Error("Database endpoint response: HTTP " + r.status);
+        }
+        setStatus("Firebase Database endpoint reachable. Rules/auth अभी अलग से verify होंगे.", true);
+      } catch(e) {
+        setStatus("Connection test failed: " + e.message, false);
+      }
+    },
+
+    save(){
+      try {
+        const c = this.parse();
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(c));
+        setStatus("Config saved. Page reload हो रहा है...", true);
+        setTimeout(() => location.reload(), 700);
+      } catch(e) {
+        setStatus("Save failed: " + e.message, false);
+      }
+    },
+
+    reset(){
+      if (!confirm("Default local-9a38c Firebase config restore करें?")) return;
+      localStorage.removeItem(STORAGE_KEY);
+      const box = document.getElementById("firebase-config-json");
+      if (box) box.value = JSON.stringify(DEFAULT_CONFIG, null, 2);
+      setStatus("Default config restored. Save & Reconnect दबाएँ।", true);
+    }
+  };
+
+  /* IMPORTANT:
+     This manager stores the config for the next page load. The Admin/User
+     Firebase initialization must read this same key before initializeApp().
+  */
+})();
+
+</script>
+
+<!-- Firebase Config Manager -->
+<div id="firebase-config-modal" style="display:none;position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.65);backdrop-filter:blur(8px);padding:20px;overflow:auto">
+  <div style="max-width:760px;margin:30px auto;background:#fff;border-radius:18px;padding:22px;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px">
+      <h2 style="margin:0">⚙️ Firebase Config</h2>
+      <button onclick="FirebaseConfigManager.close()" style="border:0;background:#eee;border-radius:10px;padding:8px 12px">✕</button>
+    </div>
+    <p style="color:#666;font-size:13px">Firebase Web Config बदलें और नए project से reconnect करें। Save के बाद page reload होगा।</p>
+
+    <textarea id="firebase-config-json" spellcheck="false"
+      style="width:100%;min-height:180px;padding:12px;border:1px solid #ddd;border-radius:12px;font-family:monospace;font-size:13px;box-sizing:border-box"
+      placeholder='{"apiKey":"...","authDomain":"...","databaseURL":"...","projectId":"...","storageBucket":"...","messagingSenderId":"...","appId":"...","measurementId":"..."}'></textarea>
+
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+      <button onclick="FirebaseConfigManager.loadCurrent()" style="padding:10px 14px;border:1px solid #ddd;border-radius:10px;background:#f7f7f7">Current Config</button>
+      <button onclick="FirebaseConfigManager.test()" style="padding:10px 14px;border:0;border-radius:10px;background:#198754;color:#fff">Test Connection</button>
+      <button onclick="FirebaseConfigManager.save()" style="padding:10px 14px;border:0;border-radius:10px;background:#0d6efd;color:#fff">Save & Reconnect</button>
+      <button onclick="FirebaseConfigManager.reset()" style="padding:10px 14px;border:1px solid #dc3545;border-radius:10px;background:#fff;color:#dc3545">Reset Default</button>
+    </div>
+    <div id="firebase-config-status" style="margin-top:12px;font-size:13px"></div>
+  </div>
+</div>
+
 </body>
 </html>
