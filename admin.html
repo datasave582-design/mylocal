@@ -43,8 +43,9 @@
       <div class="fw-bold small mb-2"><i class="bi bi-google me-1"></i> Firebase Super Admin Login</div>
       <input id="adminEmail" type="email" class="form-control mb-2" placeholder="Admin email" onkeyup="if(event.key==='Enter') document.getElementById('adminFirebasePass').focus()">
       <input id="adminFirebasePass" type="password" class="form-control mb-2" placeholder="Firebase password" onkeyup="if(event.key==='Enter') AdminAuth.loginWithFirebase()">
-      <button class="btn btn-danger w-100 fw-bold py-2" onclick="AdminAuth.loginWithFirebase()"><i class="bi bi-unlock-fill me-1"></i> लॉगिन करें</button>
-      <div class="small text-secondary mt-2">पहले Firebase Console में Email/Password user बनाकर उसे <code>admins/{uid} = true</code> से authorize करें। सुरक्षा के लिए Admin login सिर्फ Firebase से होता है — कोई साधारण पासवर्ड login नहीं है।</div>
+      <button id="admin-login-btn" class="btn btn-danger w-100 fw-bold py-2" onclick="AdminAuth.loginWithFirebase()"><i class="bi bi-unlock-fill me-1"></i> लॉगिन करें</button>
+      <div id="admin-login-status" class="small mt-2" style="min-height:20px"></div>
+      <div class="small text-secondary mt-2">पहले Firebase Console में Email/Password user बनाकर उसे <code>admins/{uid} = true</code> से authorize करें। Admin login Firebase Authentication + Realtime Database authorization से सुरक्षित है।</div>
       <div class="text-center mt-4"><a class="quiet small" href="index.html"><i class="bi bi-arrow-left me-1"></i> Consumer App पर वापस जाएँ</a></div>
     </div>
   </div>
@@ -149,63 +150,215 @@
     }
 
     /* ========================================================================
-       LOGIN / AUTH — Firebase-only. There is no local password fallback:
-       every admin must be a Firebase user authorized via admins/{uid}=true.
+       LOGIN / AUTH — Firebase-only.
+       Important: authorization is checked only after Firebase has completed
+       the auth state change and the ID token has been refreshed. This avoids
+       duplicate/racing reads of /admins/{uid} during sign-in.
        ======================================================================== */
+    let adminAuthRef = null, adminAuthHandler = null, adminAuthTimer = null;
+    let adminLoginBusy = false;
+
+    function setAdminLoginStatus(message, ok = false) {
+      const el = document.getElementById("admin-login-status");
+      if (!el) return;
+      el.textContent = message || "";
+      el.style.color = ok ? "#198754" : "#dc3545";
+    }
+
+    function setAdminLoginBusy(busy) {
+      adminLoginBusy = !!busy;
+      const btn = document.getElementById("admin-login-btn");
+      if (!btn) return;
+      btn.disabled = adminLoginBusy;
+      btn.innerHTML = adminLoginBusy
+        ? '<span class="spinner-border spinner-border-sm me-1"></span> जाँच हो रही है...'
+        : '<i class="bi bi-unlock-fill me-1"></i> लॉगिन करें';
+    }
+
+    async function verifyAdminAccess(user) {
+      if (!isFirebaseReady || !auth || !db || !user) {
+        throw new Error("Firebase तैयार नहीं है या user session उपलब्ध नहीं है।");
+      }
+
+      // Force-refresh the Firebase Auth ID token before the RTDB rules check.
+      // This makes the authorization check deterministic after a fresh login.
+      await user.getIdToken(true);
+
+      const uid = user.uid;
+      const ref = db.ref("admins/" + uid);
+      let snap;
+      try {
+        snap = await ref.once("value");
+      } catch (e) {
+        const code = e && e.code ? e.code : "unknown";
+        const msg = e && e.message ? e.message : String(e);
+        throw new Error(
+          "Admin authorization read failed [" + code + "] at /admins/" + uid +
+          ".\nProject: " + firebaseConfig.projectId +
+          "\nDatabase: " + firebaseConfig.databaseURL +
+          "\nUID: " + uid +
+          "\nFirebase message: " + msg
+        );
+      }
+
+      if (snap.val() !== true) {
+        throw new Error(
+          "इस Firebase user को Admin authorization नहीं मिला।\n" +
+          "Firebase Console → Realtime Database → Data में:\n" +
+          "admins/" + uid + " = true\nसेट करें।"
+        );
+      }
+
+      return true;
+    }
+
     const AdminAuth = {
       isLoggedIn() { return !!State.identity; },
+
       async loginWithFirebase() {
         const email = document.getElementById("adminEmail").value.trim();
         const pass = document.getElementById("adminFirebasePass").value;
-        if (!isFirebaseReady) return alert("Firebase उपलब्ध नहीं है। Internet connection जांचें और पेज reload करें — बिना Firebase के Admin login संभव नहीं है।");
-        if (!email || !pass) return alert("Email और Password दोनों डालें।");
+
+        if (adminLoginBusy) return;
+        if (!isFirebaseReady) {
+          setAdminLoginStatus("Firebase उपलब्ध नहीं है। Internet और Firebase Config जांचें।");
+          return;
+        }
+        if (!email || !pass) {
+          setAdminLoginStatus("Email और Password दोनों डालें।");
+          return;
+        }
+
+        setAdminLoginBusy(true);
+        setAdminLoginStatus("Firebase Authentication से login हो रहा है...", true);
+
         try {
-          const c = await auth.signInWithEmailAndPassword(email, pass);
-          const snap = await db.ref("admins/" + c.user.uid).once("value");
-          if (snap.val() !== true) { await auth.signOut(); return alert("यह Firebase user Super Admin के रूप में authorize नहीं है। Firebase Console में admins/" + c.user.uid + " = true सेट करें।"); }
-          State.identity = { mode: "firebase", name: c.user.displayName || email.split("@")[0], email, uid: c.user.uid };
-          this.enter();
-          attachAdminRealtime();
-          watchAdminAuthorization();
-        } catch (e) { alert("Firebase login failed: " + (e.message || e)); }
+          // Authorization is deliberately NOT read here. onAuthStateChanged
+          // performs the single authoritative /admins/{uid} check after login.
+          await auth.signInWithEmailAndPassword(email, pass);
+          setAdminLoginStatus("Login सफल। Admin authorization verify हो रहा है...", true);
+        } catch (e) {
+          const code = e && e.code ? e.code : "unknown";
+          const msg = e && e.message ? e.message : String(e);
+          setAdminLoginStatus("Firebase login failed [" + code + "]: " + msg);
+          setAdminLoginBusy(false);
+        }
       },
+
       enter() {
         document.getElementById("login-screen").style.display = "none";
         document.getElementById("admin-app").style.display = "block";
         document.getElementById("admin-identity-badge").textContent = "Firebase Admin — " + State.identity.email;
+        setAdminLoginStatus("", true);
+        setAdminLoginBusy(false);
         AdminPanel.refresh();
       },
+
       logout() {
         if (!confirm("Admin panel से logout करें?")) return;
-        detachAdminRealtime(); stopAdminAuthorizationWatch();
-        if (isFirebaseReady) auth.signOut().catch(() => {});
+        detachAdminRealtime();
+        stopAdminAuthorizationWatch();
         State.identity = null;
         document.getElementById("admin-app").style.display = "none";
         document.getElementById("login-screen").style.display = "flex";
+        setAdminLoginBusy(false);
+        setAdminLoginStatus("Logout हो गया।", true);
+        if (isFirebaseReady && auth) auth.signOut().catch(() => {});
       }
     };
 
-    let adminAuthRef = null, adminAuthHandler = null, adminAuthTimer = null;
     function stopAdminAuthorizationWatch() {
-      if (adminAuthRef && adminAuthHandler) { try { adminAuthRef.off("value", adminAuthHandler); } catch (_) {} }
-      adminAuthRef=null; adminAuthHandler=null; if(adminAuthTimer) clearInterval(adminAuthTimer); adminAuthTimer=null;
+      if (adminAuthRef && adminAuthHandler) {
+        try { adminAuthRef.off("value", adminAuthHandler); } catch (_) {}
+      }
+      adminAuthRef = null;
+      adminAuthHandler = null;
+      if (adminAuthTimer) clearInterval(adminAuthTimer);
+      adminAuthTimer = null;
     }
+
     function revokeAdminNow(message) {
-      stopAdminAuthorizationWatch(); detachAdminRealtime(); State.identity=null;
-      document.getElementById("admin-app").style.display="none"; document.getElementById("login-screen").style.display="flex";
-      if(isFirebaseReady) auth.signOut().catch(()=>{}); alert(message||"Admin access revoked.");
+      stopAdminAuthorizationWatch();
+      detachAdminRealtime();
+      State.identity = null;
+      document.getElementById("admin-app").style.display = "none";
+      document.getElementById("login-screen").style.display = "flex";
+      setAdminLoginBusy(false);
+      setAdminLoginStatus(message || "Admin access revoked.");
+      if (isFirebaseReady && auth) auth.signOut().catch(() => {});
     }
+
     function watchAdminAuthorization() {
-      if(!isFirebaseReady || !auth.currentUser || !State.identity) return;
-      stopAdminAuthorizationWatch(); const uid=auth.currentUser.uid; adminAuthRef=db.ref("admins/"+uid);
-      adminAuthHandler=snap=>{ if(snap.val()!==true) revokeAdminNow("इस Admin account का access हटा दिया गया है।"); };
-      adminAuthRef.on("value",adminAuthHandler,()=>revokeAdminNow("Admin authorization verify नहीं हो सका।"));
-      adminAuthTimer=setInterval(async()=>{ if(!auth.currentUser||!State.identity)return; try{const s=await db.ref("admins/"+auth.currentUser.uid).once("value"); if(s.val()!==true) revokeAdminNow("इस Admin account का access हटा दिया गया है।");}catch(_){} },10000);
+      if (!isFirebaseReady || !auth.currentUser || !State.identity) return;
+
+      stopAdminAuthorizationWatch();
+      const uid = auth.currentUser.uid;
+      adminAuthRef = db.ref("admins/" + uid);
+
+      adminAuthHandler = snap => {
+        if (snap.val() !== true) {
+          revokeAdminNow("इस Admin account का access हटा दिया गया है।");
+        }
+      };
+
+      adminAuthRef.on("value", adminAuthHandler, err => {
+        revokeAdminNow("Admin authorization verify नहीं हो सका: " + (err?.message || err));
+      });
+
+      // Periodic verification also protects an already-open admin session.
+      adminAuthTimer = setInterval(async () => {
+        if (!auth.currentUser || !State.identity) return;
+        try {
+          await auth.currentUser.getIdToken(true);
+          const s = await db.ref("admins/" + auth.currentUser.uid).once("value");
+          if (s.val() !== true) revokeAdminNow("इस Admin account का access हटा दिया गया है।");
+        } catch (_) {
+          // Do not immediately log out on a transient network error.
+        }
+      }, 10000);
     }
-    if(isFirebaseReady && auth){
-      auth.onAuthStateChanged(async user=>{
-        if(!user){ stopAdminAuthorizationWatch(); detachAdminRealtime(); if(State.identity){State.identity=null;document.getElementById("admin-app").style.display="none";document.getElementById("login-screen").style.display="flex";} return; }
-        try{const s=await db.ref("admins/"+user.uid).once("value"); if(s.val()===true){State.identity={mode:"firebase",name:user.displayName||user.email?.split("@")[0]||"Admin",email:user.email||"",uid:user.uid}; AdminAuth.enter(); attachAdminRealtime(); watchAdminAuthorization();} else {await auth.signOut();}}catch(_){await auth.signOut().catch(()=>{});}
+
+    if (isFirebaseReady && auth) {
+      auth.onAuthStateChanged(async user => {
+        if (!user) {
+          stopAdminAuthorizationWatch();
+          detachAdminRealtime();
+          State.identity = null;
+          document.getElementById("admin-app").style.display = "none";
+          document.getElementById("login-screen").style.display = "flex";
+          setAdminLoginBusy(false);
+          return;
+        }
+
+        try {
+          setAdminLoginBusy(true);
+          setAdminLoginStatus("Firebase session मिला। /admins/" + user.uid + " authorization check हो रहा है...", true);
+
+          await verifyAdminAccess(user);
+
+          State.identity = {
+            mode: "firebase",
+            name: user.displayName || user.email?.split("@")[0] || "Admin",
+            email: user.email || "",
+            uid: user.uid
+          };
+
+          AdminAuth.enter();
+          attachAdminRealtime();
+          watchAdminAuthorization();
+        } catch (e) {
+          const msg = e && e.message ? e.message : String(e);
+          console.error("Admin authorization error:", e);
+          State.identity = null;
+          document.getElementById("admin-app").style.display = "none";
+          document.getElementById("login-screen").style.display = "flex";
+          setAdminLoginBusy(false);
+          setAdminLoginStatus(msg);
+
+          // Only sign out after the authorization check fails. This prevents
+          // a non-admin Firebase account from remaining authenticated.
+          try { await auth.signOut(); } catch (_) {}
+        }
       });
     }
 
